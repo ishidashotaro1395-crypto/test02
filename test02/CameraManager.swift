@@ -20,10 +20,10 @@ enum ObjectKind: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .poster: return "POSTER"
-        case .sign: return "SIGN"
-        case .vision: return "VISION"
-        case .person: return "PERSON"
+        case .poster:  return "POSTER"
+        case .sign:    return "SIGN"
+        case .vision:  return "VISION"
+        case .person:  return "PERSON"
         case .vehicle: return "VEHICLE"
         case .unknown: return "UNKNOWN"
         }
@@ -57,7 +57,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let bufferQueue = DispatchQueue(label: "camera.buffer")
     private var isConfigured = false
     private nonisolated(unsafe) var lastProcessedTime: CFAbsoluteTime = 0
-    private let minProcessInterval: CFAbsoluteTime = 1.0 / 15.0
+    private let minProcessInterval: CFAbsoluteTime = 1.0 / 20.0  // 20fps 検出
     private nonisolated(unsafe) var currentVisionOrientation: CGImagePropertyOrientation = .right
 
     private let imageLock = NSLock()
@@ -97,9 +97,7 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self else { return }
             self.session.beginConfiguration()
             defer { self.session.commitConfiguration() }
-            for input in self.session.inputs {
-                self.session.removeInput(input)
-            }
+            for input in self.session.inputs { self.session.removeInput(input) }
             guard let device = AVCaptureDevice.default(option.deviceType,
                                                         for: .video,
                                                         position: option.position),
@@ -110,17 +108,14 @@ final class CameraManager: NSObject, ObservableObject {
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = false
             }
-            Task { @MainActor in
-                self.currentCamera = option
-            }
+            Task { @MainActor in self.currentCamera = option }
         }
     }
 
     private func ensureAuthorized() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: return true
-        case .notDetermined:
-            return await AVCaptureDevice.requestAccess(for: .video)
+        case .notDetermined: return await AVCaptureDevice.requestAccess(for: .video)
         default: return false
         }
     }
@@ -130,7 +125,6 @@ final class CameraManager: NSObject, ObservableObject {
         isConfigured = true
 
         session.beginConfiguration()
-
         session.sessionPreset = .hd1280x720
 
         videoOutput.videoSettings = [
@@ -139,9 +133,7 @@ final class CameraManager: NSObject, ObservableObject {
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.setSampleBufferDelegate(self, queue: bufferQueue)
 
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
-        }
+        if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
         let cameras = discoverCameras()
         let defaultOption = cameras.first(where: {
@@ -176,19 +168,14 @@ final class CameraManager: NSObject, ObservableObject {
             .builtInTrueDepthCamera
         ]
         let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: types,
-            mediaType: .video,
-            position: .unspecified
-        )
-        let options: [CameraOption] = discovery.devices.map { device in
-            CameraOption(
-                id: "\(device.deviceType.rawValue)|\(device.position.rawValue)",
-                deviceType: device.deviceType,
-                position: device.position,
-                label: cameraLabel(for: device)
-            )
+            deviceTypes: types, mediaType: .video, position: .unspecified)
+        return discovery.devices.map { device in
+            CameraOption(id: "\(device.deviceType.rawValue)|\(device.position.rawValue)",
+                         deviceType: device.deviceType,
+                         position: device.position,
+                         label: cameraLabel(for: device))
         }
-        return options.sorted { cameraOrder($0) < cameraOrder($1) }
+        .sorted { cameraOrder($0) < cameraOrder($1) }
     }
 }
 
@@ -208,13 +195,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         guard now - lastProcessedTime >= minProcessInterval else { return }
         lastProcessedTime = now
 
+        // 矩形検出 — 感度向上
         let rectRequest = VNDetectRectanglesRequest()
-        rectRequest.maximumObservations = 8
-        rectRequest.minimumAspectRatio = 0.35
+        rectRequest.maximumObservations = 12
+        rectRequest.minimumAspectRatio = 0.2    // 5:1 程度の横長も対象
         rectRequest.maximumAspectRatio = 1.0
-        rectRequest.minimumSize = 0.07
-        rectRequest.minimumConfidence = 0.75
-        rectRequest.quadratureTolerance = 15
+        rectRequest.minimumSize = 0.04           // より小さいオブジェクトも
+        rectRequest.minimumConfidence = 0.45     // 感度を上げる
+        rectRequest.quadratureTolerance = 20     // 歪み許容を広げる
 
         let humanRequest = VNDetectHumanRectanglesRequest()
         humanRequest.upperBodyOnly = false
@@ -232,9 +220,9 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             for obs in results {
                 let aspect = obs.boundingBox.width / max(obs.boundingBox.height, 0.001)
                 let kind: ObjectKind
-                if aspect >= 1.7 { kind = .vision }
+                if aspect >= 1.7     { kind = .vision }
                 else if aspect <= 0.65 { kind = .poster }
-                else { kind = .sign }
+                else                 { kind = .sign }
                 combined.append(DetectedObject(boundingBox: obs.boundingBox,
                                                confidence: obs.confidence,
                                                kind: kind))
@@ -252,7 +240,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                 guard let objects = obs.salientObjects else { continue }
                 for s in objects {
                     let area = s.boundingBox.width * s.boundingBox.height
-                    guard area >= 0.04 else { continue }
+                    guard area >= 0.015 else { continue }  // より小さいオブジェクトも
                     let aspect = s.boundingBox.width / max(s.boundingBox.height, 0.001)
                     let kind: ObjectKind = aspect >= 1.4 ? .vehicle : .unknown
                     combined.append(DetectedObject(boundingBox: s.boundingBox,
@@ -263,19 +251,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
 
         let deduped = dedupeBoxes(combined, iouThreshold: 0.5)
-
-        Task { @MainActor [weak self] in
-            self?.detections = deduped
-        }
+        Task { @MainActor [weak self] in self?.detections = deduped }
     }
 }
 
 private func dedupeBoxes(_ items: [DetectedObject], iouThreshold: CGFloat) -> [DetectedObject] {
     var kept: [DetectedObject] = []
-    let sorted = items.sorted { $0.confidence > $1.confidence }
-    for item in sorted {
-        let overlapping = kept.contains { iouRect($0.boundingBox, item.boundingBox) > iouThreshold }
-        if !overlapping {
+    for item in items.sorted(by: { $0.confidence > $1.confidence }) {
+        if !kept.contains(where: { iouRect($0.boundingBox, item.boundingBox) > iouThreshold }) {
             kept.append(item)
         }
     }
@@ -292,32 +275,32 @@ private func iouRect(_ a: CGRect, _ b: CGRect) -> CGFloat {
 
 private func visionOrientation(for orientation: UIDeviceOrientation) -> CGImagePropertyOrientation {
     switch orientation {
-    case .portrait: return .right
-    case .portraitUpsideDown: return .left
-    case .landscapeLeft: return .up
-    case .landscapeRight: return .down
-    default: return .right
+    case .portrait:             return .right
+    case .portraitUpsideDown:   return .left
+    case .landscapeLeft:        return .up
+    case .landscapeRight:       return .down
+    default:                    return .right
     }
 }
 
 private func cameraLabel(for device: AVCaptureDevice) -> String {
     switch (device.deviceType, device.position) {
-    case (.builtInUltraWideCamera, .back): return "0.5×"
-    case (.builtInWideAngleCamera, .back): return "1×"
-    case (.builtInTelephotoCamera, .back): return "TELE"
+    case (.builtInUltraWideCamera, .back):  return "0.5×"
+    case (.builtInWideAngleCamera, .back):  return "1×"
+    case (.builtInTelephotoCamera, .back):  return "TELE"
     case (.builtInWideAngleCamera, .front): return "FRONT"
     case (.builtInTrueDepthCamera, .front): return "FRONT"
-    default: return device.localizedName
+    default:                                return device.localizedName
     }
 }
 
 private func cameraOrder(_ option: CameraOption) -> Int {
     switch (option.deviceType, option.position) {
-    case (.builtInUltraWideCamera, .back): return 0
-    case (.builtInWideAngleCamera, .back): return 1
-    case (.builtInTelephotoCamera, .back): return 2
+    case (.builtInUltraWideCamera, .back):  return 0
+    case (.builtInWideAngleCamera, .back):  return 1
+    case (.builtInTelephotoCamera, .back):  return 2
     case (.builtInWideAngleCamera, .front): return 3
     case (.builtInTrueDepthCamera, .front): return 4
-    default: return 99
+    default:                                return 99
     }
 }

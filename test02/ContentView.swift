@@ -2,8 +2,6 @@
 //  ContentView.swift
 //  test02
 //
-//  Created by Shotaro Ishida on 2026/06/24.
-//
 
 import SwiftUI
 import UIKit
@@ -12,6 +10,8 @@ struct ContentView: View {
     @StateObject private var camera = CameraManager()
     @StateObject private var recording = RecordingManager()
     @StateObject private var trackingState = TrackingState()
+    @StateObject private var audio = IkedaAudioEngine()
+    @StateObject private var scanEngine = ScanEngine()
 
     @State private var deviceOrientation: UIDeviceOrientation = .portrait
     @State private var showSettings: Bool = false
@@ -31,6 +31,7 @@ struct ContentView: View {
                 .allowsHitTesting(false)
 
             TrackingOverlay(state: trackingState,
+                            scanEngine: scanEngine,
                             detections: camera.detections,
                             bufferAspect: bufferAspect(for: deviceOrientation))
                 .ignoresSafeArea()
@@ -57,11 +58,18 @@ struct ContentView: View {
         .onAppear {
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             updateOrientation()
+            audio.start()
             camera.start()
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(900))
+                audio.reactivate()
+                scanEngine.start(state: trackingState, audio: audio)
+            }
         }
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
             camera.stop()
+            scanEngine.stop()
             if recording.isRecording { recording.stop() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
@@ -111,8 +119,8 @@ struct ContentView: View {
 
     private var modeLabel: String {
         switch trackingState.mode {
-        case .normal: return "NORMAL"
-        case .shuffle: return "SHUFFLE"
+        case .normal:       return "NORMAL"
+        case .shuffle:      return "SHUFFLE"
         case .pixelStretch: return "PIXEL STRETCH"
         }
     }
@@ -144,7 +152,6 @@ struct ContentView: View {
                 Circle()
                     .stroke(tint, lineWidth: 1.2)
                     .frame(width: 56, height: 56)
-
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(tint)
@@ -160,7 +167,6 @@ struct ContentView: View {
                 Circle()
                     .stroke(tint, lineWidth: 1.5)
                     .frame(width: 70, height: 70)
-
                 Circle()
                     .fill(.red)
                     .frame(width: 56, height: 56)
@@ -191,11 +197,11 @@ struct ContentView: View {
 
 private func previewRotation(for orientation: UIDeviceOrientation) -> CGFloat {
     switch orientation {
-    case .portrait: return 90
-    case .portraitUpsideDown: return 270
-    case .landscapeLeft: return 0
-    case .landscapeRight: return 180
-    default: return 90
+    case .portrait:             return 90
+    case .portraitUpsideDown:   return 270
+    case .landscapeLeft:        return 0
+    case .landscapeRight:       return 180
+    default:                    return 90
     }
 }
 

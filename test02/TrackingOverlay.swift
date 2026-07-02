@@ -7,6 +7,7 @@ import SwiftUI
 
 struct TrackingOverlay: View {
     @ObservedObject var state: TrackingState
+    @ObservedObject var scanEngine: ScanEngine
     let detections: [DetectedObject]
     let bufferAspect: CGFloat
 
@@ -23,6 +24,7 @@ struct TrackingOverlay: View {
                 if state.mode == .shuffle {
                     drawSwapLines(now: now, context: context, size: size)
                 }
+                drawScanLines(scanEngine.lines, context: context, size: size)
                 drawReticle(context: context,
                             size: size,
                             time: now.timeIntervalSinceReferenceDate)
@@ -33,6 +35,8 @@ struct TrackingOverlay: View {
             state.applyDetections(new)
         }
     }
+
+    // MARK: - Coordinate helpers
 
     private func viewRect(from box: CGRect, in size: CGSize) -> CGRect {
         let viewAspect = size.width / size.height
@@ -55,6 +59,49 @@ struct TrackingOverlay: View {
         )
     }
 
+    // MARK: - Scan lines
+
+    private func drawScanLines(_ lines: [ScanLine], context: GraphicsContext, size: CGSize) {
+        for line in lines {
+            let tc = line.trail.count
+            for (ti, tp) in line.trail.enumerated() {
+                let t = Double(ti + 1) / Double(tc + 1)
+                let trailAlpha = t * t * 0.55
+                let w = max(0.3, line.thickness * t * 0.8)
+                switch line.direction {
+                case .horizontal:
+                    context.fill(
+                        Path(CGRect(x: 0, y: tp * Double(size.height) - w / 2,
+                                    width: Double(size.width), height: w)),
+                        with: .color(tint.opacity(trailAlpha))
+                    )
+                case .vertical:
+                    context.fill(
+                        Path(CGRect(x: tp * Double(size.width) - w / 2, y: 0,
+                                    width: w, height: Double(size.height))),
+                        with: .color(tint.opacity(trailAlpha))
+                    )
+                }
+            }
+            switch line.direction {
+            case .horizontal:
+                context.fill(
+                    Path(CGRect(x: 0, y: line.position * Double(size.height),
+                                width: Double(size.width), height: line.thickness)),
+                    with: .color(tint)
+                )
+            case .vertical:
+                context.fill(
+                    Path(CGRect(x: line.position * Double(size.width), y: 0,
+                                width: line.thickness, height: Double(size.height))),
+                    with: .color(tint)
+                )
+            }
+        }
+    }
+
+    // MARK: - Reticle
+
     private func drawReticle(context: GraphicsContext, size: CGSize, time: TimeInterval) {
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let r: CGFloat = 14
@@ -65,19 +112,18 @@ struct TrackingOverlay: View {
         cross.addLine(to: CGPoint(x: center.x, y: center.y + r))
         context.stroke(cross, with: .color(tint), lineWidth: 0.7)
 
-        let circle = Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
+        let circle = Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r,
+                                            width: r * 2, height: r * 2))
         context.stroke(circle, with: .color(tint.opacity(0.85)), lineWidth: 0.6)
 
         let phase = sin(time * 2) * 0.5 + 0.5
         let scanR = r * (1 + CGFloat(phase) * 0.5)
-        let scan = Path(ellipseIn: CGRect(
-            x: center.x - scanR,
-            y: center.y - scanR,
-            width: scanR * 2,
-            height: scanR * 2
-        ))
+        let scan = Path(ellipseIn: CGRect(x: center.x - scanR, y: center.y - scanR,
+                                          width: scanR * 2, height: scanR * 2))
         context.stroke(scan, with: .color(tint.opacity(0.45)), lineWidth: 0.4)
     }
+
+    // MARK: - Tracking box
 
     private func drawTrackingBox(_ box: TrackingState.TrackedBox,
                                  now: Date,
@@ -103,8 +149,8 @@ struct TrackingOverlay: View {
 
         let hideFill: Bool
         switch state.mode {
-        case .normal: hideFill = false
-        case .shuffle: hideFill = state.isInvolvedInSwap(box.id)
+        case .normal:      hideFill = false
+        case .shuffle:     hideFill = state.isInvolvedInSwap(box.id)
         case .pixelStretch: hideFill = true
         }
 
@@ -113,16 +159,15 @@ struct TrackingOverlay: View {
             context.fill(Path(rect), with: .color(tint.opacity(effOpacity)))
         }
 
+        // バイナリコードオーバーレイ（ボックス内に常時表示）
+        drawBinaryOverlay(rect: rect, id: box.id, alpha: alpha, context: context)
+
         switch state.frameStyle {
-        case .corners:
-            drawCornerFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
-        case .plain:
-            drawPlainFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
-        case .illustrator:
-            drawIllustratorFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
+        case .corners:      drawCornerFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
+        case .plain:        drawPlainFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
+        case .illustrator:  drawIllustratorFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
         }
 
-        // Always shown labels
         drawSizeLabel(rect: rect, context: context, alpha: alpha)
         drawKindLabel(rect: rect, kind: box.kind, context: context, alpha: alpha)
 
@@ -134,158 +179,150 @@ struct TrackingOverlay: View {
         }
     }
 
-    private func drawKindLabel(rect: CGRect,
-                               kind: ObjectKind,
-                               context: GraphicsContext,
-                               alpha: CGFloat) {
-        let text = Text(kind.label)
-            .font(.system(size: 8, weight: .heavy, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(alpha))
-        context.draw(text,
-                     at: CGPoint(x: rect.minX + 2, y: rect.minY - 5),
-                     anchor: .bottomLeading)
+    // MARK: - Binary overlay
+
+    private func drawBinaryOverlay(rect: CGRect, id: UUID, alpha: CGFloat, context: GraphicsContext) {
+        guard rect.width > 24, rect.height > 14 else { return }
+        let bytes: [UInt8] = withUnsafeBytes(of: id.uuid) { Array($0) }
+        let line = bytes.map { String($0, radix: 2).zeroPadded(to: 8) }.joined(separator: " ")
+        let rowCount = max(2, Int(rect.height / 8))
+        let text = Array(repeating: line, count: rowCount).joined(separator: "\n")
+
+        context.drawLayer { inner in
+            inner.clip(to: Path(rect))
+            let t = Text(text)
+                .font(.system(size: 6, weight: .regular, design: .monospaced))
+                .foregroundColor(Color.white.opacity(Double(alpha) * 0.40))
+            inner.draw(t, in: rect.insetBy(dx: 2, dy: 2))
+        }
     }
 
     // MARK: - Frame styles
 
-    private func drawCornerFrame(rect: CGRect,
-                                 alpha: CGFloat,
-                                 isLocked: Bool,
+    private func drawCornerFrame(rect: CGRect, alpha: CGFloat, isLocked: Bool,
                                  context: GraphicsContext) {
         let corner = min(rect.width, rect.height) * 0.28
-        var corners = Path()
-        corners.move(to: CGPoint(x: rect.minX, y: rect.minY + corner))
-        corners.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-        corners.addLine(to: CGPoint(x: rect.minX + corner, y: rect.minY))
-        corners.move(to: CGPoint(x: rect.maxX - corner, y: rect.minY))
-        corners.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        corners.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + corner))
-        corners.move(to: CGPoint(x: rect.maxX, y: rect.maxY - corner))
-        corners.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        corners.addLine(to: CGPoint(x: rect.maxX - corner, y: rect.maxY))
-        corners.move(to: CGPoint(x: rect.minX + corner, y: rect.maxY))
-        corners.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        corners.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - corner))
-        let cornerWidth: CGFloat = isLocked ? 1.2 : 0.9
-        context.stroke(corners, with: .color(tint.opacity(alpha)), lineWidth: cornerWidth)
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY + corner))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.minX + corner, y: rect.minY))
+        p.move(to: CGPoint(x: rect.maxX - corner, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + corner))
+        p.move(to: CGPoint(x: rect.maxX, y: rect.maxY - corner))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.maxX - corner, y: rect.maxY))
+        p.move(to: CGPoint(x: rect.minX + corner, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - corner))
+        context.stroke(p, with: .color(tint.opacity(alpha)), lineWidth: isLocked ? 1.2 : 0.9)
     }
 
-    private func drawPlainFrame(rect: CGRect,
-                                alpha: CGFloat,
-                                isLocked: Bool,
+    private func drawPlainFrame(rect: CGRect, alpha: CGFloat, isLocked: Bool,
                                 context: GraphicsContext) {
-        let stroke = Path(rect)
-        let lineWidth: CGFloat = isLocked ? 1.0 : 0.7
-        context.stroke(stroke, with: .color(tint.opacity(alpha)), lineWidth: lineWidth)
+        context.stroke(Path(rect), with: .color(tint.opacity(alpha)),
+                       lineWidth: isLocked ? 1.0 : 0.7)
     }
 
-    private func drawIllustratorFrame(rect: CGRect,
-                                      alpha: CGFloat,
-                                      isLocked: Bool,
+    private func drawIllustratorFrame(rect: CGRect, alpha: CGFloat, isLocked: Bool,
                                       context: GraphicsContext) {
-        // Thin outline
-        let outline = Path(rect)
-        let outlineWidth: CGFloat = isLocked ? 0.7 : 0.5
-        context.stroke(outline, with: .color(tint.opacity(alpha * 0.9)), lineWidth: outlineWidth)
+        context.stroke(Path(rect), with: .color(tint.opacity(alpha * 0.9)),
+                       lineWidth: isLocked ? 0.7 : 0.5)
 
-        // 8 handles: 4 corners + 4 mid-edges
         let handlePoints: [CGPoint] = [
-            CGPoint(x: rect.minX, y: rect.minY),
-            CGPoint(x: rect.midX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.midY),
-            CGPoint(x: rect.maxX, y: rect.maxY),
-            CGPoint(x: rect.midX, y: rect.maxY),
-            CGPoint(x: rect.minX, y: rect.maxY),
-            CGPoint(x: rect.minX, y: rect.midY)
+            CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.midX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.midY),
+            CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.midX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.midY)
         ]
         let s: CGFloat = isLocked ? 6 : 5
-        for p in handlePoints {
-            let handle = CGRect(x: p.x - s / 2, y: p.y - s / 2, width: s, height: s)
-            context.fill(Path(handle), with: .color(Color.white.opacity(alpha)))
-            context.stroke(Path(handle), with: .color(tint.opacity(alpha)), lineWidth: 0.6)
+        for point in handlePoints {
+            let h = CGRect(x: point.x - s / 2, y: point.y - s / 2, width: s, height: s)
+            context.fill(Path(h), with: .color(Color.white.opacity(alpha)))
+            context.stroke(Path(h), with: .color(tint.opacity(alpha)), lineWidth: 0.6)
         }
     }
 
     // MARK: - Swap lines
 
     private struct UnorderedPair: Hashable {
-        let a: UUID
-        let b: UUID
+        let a: UUID; let b: UUID
         init(_ x: UUID, _ y: UUID) {
-            if x.uuidString < y.uuidString { (a, b) = (x, y) }
-            else { (a, b) = (y, x) }
+            if x.uuidString < y.uuidString { (a, b) = (x, y) } else { (a, b) = (y, x) }
         }
     }
 
-    private func drawSwapLines(now: Date,
-                               context: GraphicsContext,
-                               size: CGSize) {
+    private func drawSwapLines(now: Date, context: GraphicsContext, size: CGSize) {
         guard !state.swapMap.isEmpty else { return }
-
         var drawn = Set<UnorderedPair>()
-
-        for (sourceID, destID) in state.swapMap {
-            let pair = UnorderedPair(sourceID, destID)
-            if drawn.contains(pair) { continue }
+        for (srcID, dstID) in state.swapMap {
+            let pair = UnorderedPair(srcID, dstID)
+            guard !drawn.contains(pair) else { continue }
             drawn.insert(pair)
+            guard let src = state.tracked.first(where: { $0.id == srcID }),
+                  let dst = state.tracked.first(where: { $0.id == dstID }),
+                  src.isDisplayable, dst.isDisplayable else { continue }
 
-            guard let source = state.tracked.first(where: { $0.id == sourceID }),
-                  let dest = state.tracked.first(where: { $0.id == destID }),
-                  source.isDisplayable, dest.isDisplayable else { continue }
-
-            let sourceRect = viewRect(from: state.currentNormalizedRect(source, now: now), in: size)
-            let destRect = viewRect(from: state.currentNormalizedRect(dest, now: now), in: size)
-            let sourceCenter = CGPoint(x: sourceRect.midX, y: sourceRect.midY)
-            let destCenter = CGPoint(x: destRect.midX, y: destRect.midY)
+            let srcCenter = CGPoint(
+                x: viewRect(from: state.currentNormalizedRect(src, now: now), in: size).midX,
+                y: viewRect(from: state.currentNormalizedRect(src, now: now), in: size).midY)
+            let dstCenter = CGPoint(
+                x: viewRect(from: state.currentNormalizedRect(dst, now: now), in: size).midX,
+                y: viewRect(from: state.currentNormalizedRect(dst, now: now), in: size).midY)
 
             var line = Path()
-            line.move(to: sourceCenter)
-            line.addLine(to: destCenter)
+            line.move(to: srcCenter)
+            line.addLine(to: dstCenter)
             context.stroke(line, with: .color(tint.opacity(0.9)), lineWidth: 0.8)
 
-            let nodeR: CGFloat = 2.5
-            context.fill(Path(ellipseIn: CGRect(x: sourceCenter.x - nodeR, y: sourceCenter.y - nodeR, width: nodeR * 2, height: nodeR * 2)),
-                         with: .color(tint))
-            context.fill(Path(ellipseIn: CGRect(x: destCenter.x - nodeR, y: destCenter.y - nodeR, width: nodeR * 2, height: nodeR * 2)),
-                         with: .color(tint))
+            let r: CGFloat = 2.5
+            for c in [srcCenter, dstCenter] {
+                context.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r,
+                                                    width: r * 2, height: r * 2)),
+                             with: .color(tint))
+            }
         }
     }
 
     // MARK: - Labels
 
-    private func drawCoordinateLabel(rect: CGRect,
-                                     context: GraphicsContext,
-                                     alpha: CGFloat) {
-        let label = String(format: "%.0f, %.0f", rect.minX, rect.minY)
-        let text = Text(label)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(alpha))
-        context.draw(text,
-                     at: CGPoint(x: rect.minX + 2, y: rect.maxY + 5),
-                     anchor: .topLeading)
+    private func drawKindLabel(rect: CGRect, kind: ObjectKind, context: GraphicsContext,
+                               alpha: CGFloat) {
+        context.draw(
+            Text(kind.label)
+                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(alpha)),
+            at: CGPoint(x: rect.minX + 2, y: rect.minY - 5), anchor: .bottomLeading)
     }
 
-    private func drawSizeLabel(rect: CGRect,
-                               context: GraphicsContext,
-                               alpha: CGFloat) {
-        let label = "\(Int(rect.width.rounded()))×\(Int(rect.height.rounded()))"
-        let text = Text(label)
-            .font(.system(size: 10, weight: .heavy, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(alpha))
-        context.draw(text,
-                     at: CGPoint(x: rect.maxX - 2, y: rect.minY - 5),
-                     anchor: .bottomTrailing)
+    private func drawSizeLabel(rect: CGRect, context: GraphicsContext, alpha: CGFloat) {
+        context.draw(
+            Text("\(Int(rect.width.rounded()))×\(Int(rect.height.rounded()))")
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(alpha)),
+            at: CGPoint(x: rect.maxX - 2, y: rect.minY - 5), anchor: .bottomTrailing)
     }
 
-    private func drawLockLabel(rect: CGRect,
-                               context: GraphicsContext,
-                               alpha: CGFloat) {
-        let text = Text("LOCK")
-            .font(.system(size: 9, weight: .heavy, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(alpha))
-        context.draw(text,
-                     at: CGPoint(x: rect.maxX - 2, y: rect.maxY + 5),
-                     anchor: .topTrailing)
+    private func drawCoordinateLabel(rect: CGRect, context: GraphicsContext, alpha: CGFloat) {
+        context.draw(
+            Text(String(format: "%.0f, %.0f", rect.minX, rect.minY))
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(alpha)),
+            at: CGPoint(x: rect.minX + 2, y: rect.maxY + 5), anchor: .topLeading)
+    }
+
+    private func drawLockLabel(rect: CGRect, context: GraphicsContext, alpha: CGFloat) {
+        context.draw(
+            Text("LOCK")
+                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(alpha)),
+            at: CGPoint(x: rect.maxX - 2, y: rect.maxY + 5), anchor: .topTrailing)
+    }
+}
+
+private extension String {
+    func zeroPadded(to length: Int) -> String {
+        guard count < length else { return self }
+        return String(repeating: "0", count: length - count) + self
     }
 }
