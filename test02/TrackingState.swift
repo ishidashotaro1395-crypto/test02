@@ -14,8 +14,8 @@ enum TrackingMode: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .normal: return "通常"
-        case .shuffle: return "シャッフル"
+        case .normal:       return "通常"
+        case .shuffle:      return "シャッフル"
         case .pixelStretch: return "ピクセル伸ばし"
         }
     }
@@ -28,9 +28,9 @@ enum FrameStyle: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .corners: return "コーナー"
-        case .plain: return "枠のみ"
-        case .illustrator: return "Illustrator風"
+        case .corners:      return "コーナー"
+        case .plain:        return "枠のみ"
+        case .illustrator:  return "Illustrator風"
         }
     }
 }
@@ -42,13 +42,10 @@ final class TrackingState: ObservableObject {
     @Published private(set) var frameStyle: FrameStyle = .corners
     @Published private(set) var fillOpacity: Double = 0.85
     @Published private(set) var coverCompletely: Bool = false
+    @Published private(set) var showBinaryOverlay: Bool = true
+    @Published private(set) var scanLineSpeed: Double = 1.0   // 0.25–4.0×
 
-    static let fillOpacityOptions: [Double] = [0.0, 0.25, 0.5, 0.75, 1.0]
-
-    /// Effective fill opacity used by overlays / compositors.
-    var effectiveFillOpacity: Double {
-        coverCompletely ? 1.0 : fillOpacity
-    }
+    var effectiveFillOpacity: Double { coverCompletely ? 1.0 : fillOpacity }
 
     let transitionDuration: TimeInterval = 0.14
     private let iouMatchThreshold: CGFloat = 0.1
@@ -77,29 +74,24 @@ final class TrackingState: ObservableObject {
         var isDisplayable: Bool { hitCount >= 2 }
     }
 
-    // MARK: - Mode
+    // MARK: - Setters
 
     func setMode(_ new: TrackingMode) {
         guard mode != new else { return }
         mode = new
-        if new == .shuffle {
-            regenerateSwapMap()
-        } else {
-            swapMap = [:]
-        }
+        swapMap = new == .shuffle ? [:] : [:]
+        if new == .shuffle { regenerateSwapMap() }
     }
 
-    func setFrameStyle(_ new: FrameStyle) {
-        frameStyle = new
-    }
+    func setFrameStyle(_ new: FrameStyle) { frameStyle = new }
 
-    func setFillOpacity(_ new: Double) {
-        fillOpacity = max(0, min(1, new))
-    }
+    func setFillOpacity(_ new: Double) { fillOpacity = max(0, min(1, new)) }
 
-    func setCoverCompletely(_ value: Bool) {
-        coverCompletely = value
-    }
+    func setCoverCompletely(_ value: Bool) { coverCompletely = value }
+
+    func setShowBinaryOverlay(_ value: Bool) { showBinaryOverlay = value }
+
+    func setScanLineSpeed(_ value: Double) { scanLineSpeed = max(0.25, min(4.0, value)) }
 
     // MARK: - Detection ingest
 
@@ -113,22 +105,17 @@ final class TrackingState: ObservableObject {
         }
 
         for det in sortedNew {
-            var bestIdx: Int? = nil
+            var bestIdx: Int?
             var bestScore: CGFloat = 0
             for (idx, box) in updated.enumerated() where !matched.contains(idx) {
                 let score = matchScore(existing: box, candidate: det.boundingBox)
-                if score > bestScore {
-                    bestScore = score
-                    bestIdx = idx
-                }
+                if score > bestScore { bestScore = score; bestIdx = idx }
             }
             if let idx = bestIdx, bestScore > 0 {
                 matched.insert(idx)
                 var box = updated[idx]
                 box.previousRect = currentNormalizedRect(box, now: now)
-                box.targetRect = blendRect(box.targetRect,
-                                            det.boundingBox,
-                                            weight: targetSmoothing)
+                box.targetRect = blendRect(box.targetRect, det.boundingBox, weight: targetSmoothing)
                 box.transitionStart = now
                 box.lastConfirmed = now
                 box.confidence = det.confidence
@@ -155,29 +142,20 @@ final class TrackingState: ObservableObject {
         }
         tracked = updated
         cleanupSwapMap()
-
-        if mode == .shuffle && swapMap.isEmpty {
-            regenerateSwapMap()
-        }
+        if mode == .shuffle && swapMap.isEmpty { regenerateSwapMap() }
     }
 
     // MARK: - Shuffle
 
     private func regenerateSwapMap() {
-        // Use any displayable boxes so we can swap whenever 2+ exist
         let pool = tracked.filter { $0.isDisplayable }.map { $0.id }
-        guard pool.count >= 2 else {
-            swapMap = [:]
-            return
-        }
+        guard pool.count >= 2 else { swapMap = [:]; return }
         var shuffled = pool.shuffled()
         var attempts = 0
         while attempts < 8, zip(pool, shuffled).contains(where: { $0 == $1 }) {
-            shuffled.shuffle()
-            attempts += 1
+            shuffled.shuffle(); attempts += 1
         }
-        if zip(pool, shuffled).contains(where: { $0 == $1 }),
-           let first = pool.first {
+        if zip(pool, shuffled).contains(where: { $0 == $1 }), let first = pool.first {
             shuffled = Array(pool.dropFirst()) + [first]
         }
         swapMap = Dictionary(uniqueKeysWithValues: zip(pool, shuffled))
@@ -190,16 +168,13 @@ final class TrackingState: ObservableObject {
 
     func isInvolvedInSwap(_ id: UUID) -> Bool {
         guard mode == .shuffle else { return false }
-        if swapMap[id] != nil { return true }
-        if swapMap.values.contains(id) { return true }
-        return false
+        return swapMap[id] != nil || swapMap.values.contains(id)
     }
 
     // MARK: - Interpolation
 
     func currentNormalizedRect(_ box: TrackedBox, now: Date) -> CGRect {
-        let elapsed = now.timeIntervalSince(box.transitionStart)
-        let t = CGFloat(min(1.0, max(0, elapsed / transitionDuration)))
+        let t = CGFloat(min(1.0, max(0, now.timeIntervalSince(box.transitionStart) / transitionDuration)))
         return interpolateRect(from: box.previousRect, to: box.targetRect, t: t)
     }
 
@@ -211,9 +186,7 @@ final class TrackingState: ObservableObject {
         let centroidThresh = existing.isLocked ? lockedCentroidMatchDistance : centroidMatchDistance
 
         let iouScore = iou(existing.targetRect, candidate)
-        if iouScore >= iouThresh {
-            return iouScore + 1.0 + lockBonus
-        }
+        if iouScore >= iouThresh { return iouScore + 1.0 + lockBonus }
 
         let dx = existing.targetRect.midX - candidate.midX
         let dy = existing.targetRect.midY - candidate.midY
@@ -226,8 +199,7 @@ final class TrackingState: ObservableObject {
         let sizeRatio = min(aArea, bArea) / max(aArea, bArea)
         guard sizeRatio > 0.4 else { return 0 }
 
-        let proximity = 1 - dist / centroidThresh
-        return proximity * sizeRatio + lockBonus
+        return (1 - dist / centroidThresh) * sizeRatio + lockBonus
     }
 }
 
@@ -242,20 +214,16 @@ private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
 }
 
 func interpolateRect(from a: CGRect, to b: CGRect, t: CGFloat) -> CGRect {
-    CGRect(
-        x: a.minX + (b.minX - a.minX) * t,
-        y: a.minY + (b.minY - a.minY) * t,
-        width: a.width + (b.width - a.width) * t,
-        height: a.height + (b.height - a.height) * t
-    )
+    CGRect(x: a.minX + (b.minX - a.minX) * t,
+           y: a.minY + (b.minY - a.minY) * t,
+           width: a.width + (b.width - a.width) * t,
+           height: a.height + (b.height - a.height) * t)
 }
 
 func blendRect(_ a: CGRect, _ b: CGRect, weight w: CGFloat) -> CGRect {
     let inv = 1 - w
-    return CGRect(
-        x: a.minX * inv + b.minX * w,
-        y: a.minY * inv + b.minY * w,
-        width: a.width * inv + b.width * w,
-        height: a.height * inv + b.height * w
-    )
+    return CGRect(x: a.minX * inv + b.minX * w,
+                  y: a.minY * inv + b.minY * w,
+                  width: a.width * inv + b.width * w,
+                  height: a.height * inv + b.height * w)
 }

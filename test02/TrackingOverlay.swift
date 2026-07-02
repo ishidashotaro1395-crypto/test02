@@ -25,8 +25,7 @@ struct TrackingOverlay: View {
                     drawSwapLines(now: now, context: context, size: size)
                 }
                 drawScanLines(scanEngine.lines, context: context, size: size)
-                drawReticle(context: context,
-                            size: size,
+                drawReticle(context: context, size: size,
                             time: now.timeIntervalSinceReferenceDate)
             }
         }
@@ -59,27 +58,27 @@ struct TrackingOverlay: View {
         )
     }
 
-    // MARK: - Scan lines
+    // MARK: - Scan lines (白)
 
     private func drawScanLines(_ lines: [ScanLine], context: GraphicsContext, size: CGSize) {
         for line in lines {
             let tc = line.trail.count
             for (ti, tp) in line.trail.enumerated() {
                 let t = Double(ti + 1) / Double(tc + 1)
-                let trailAlpha = t * t * 0.55
+                let trailAlpha = t * t * 0.50
                 let w = max(0.3, line.thickness * t * 0.8)
                 switch line.direction {
                 case .horizontal:
                     context.fill(
                         Path(CGRect(x: 0, y: tp * Double(size.height) - w / 2,
                                     width: Double(size.width), height: w)),
-                        with: .color(tint.opacity(trailAlpha))
+                        with: .color(Color.white.opacity(trailAlpha))
                     )
                 case .vertical:
                     context.fill(
                         Path(CGRect(x: tp * Double(size.width) - w / 2, y: 0,
                                     width: w, height: Double(size.height))),
-                        with: .color(tint.opacity(trailAlpha))
+                        with: .color(Color.white.opacity(trailAlpha))
                     )
                 }
             }
@@ -88,13 +87,13 @@ struct TrackingOverlay: View {
                 context.fill(
                     Path(CGRect(x: 0, y: line.position * Double(size.height),
                                 width: Double(size.width), height: line.thickness)),
-                    with: .color(tint)
+                    with: .color(Color.white)
                 )
             case .vertical:
                 context.fill(
                     Path(CGRect(x: line.position * Double(size.width), y: 0,
                                 width: line.thickness, height: Double(size.height))),
-                    with: .color(tint)
+                    with: .color(Color.white)
                 )
             }
         }
@@ -118,9 +117,10 @@ struct TrackingOverlay: View {
 
         let phase = sin(time * 2) * 0.5 + 0.5
         let scanR = r * (1 + CGFloat(phase) * 0.5)
-        let scan = Path(ellipseIn: CGRect(x: center.x - scanR, y: center.y - scanR,
-                                          width: scanR * 2, height: scanR * 2))
-        context.stroke(scan, with: .color(tint.opacity(0.45)), lineWidth: 0.4)
+        context.stroke(
+            Path(ellipseIn: CGRect(x: center.x - scanR, y: center.y - scanR,
+                                   width: scanR * 2, height: scanR * 2)),
+            with: .color(tint.opacity(0.45)), lineWidth: 0.4)
     }
 
     // MARK: - Tracking box
@@ -149,18 +149,20 @@ struct TrackingOverlay: View {
 
         let hideFill: Bool
         switch state.mode {
-        case .normal:      hideFill = false
-        case .shuffle:     hideFill = state.isInvolvedInSwap(box.id)
+        case .normal:       hideFill = false
+        case .shuffle:      hideFill = state.isInvolvedInSwap(box.id)
         case .pixelStretch: hideFill = true
         }
 
         if !hideFill {
-            let effOpacity = CGFloat(state.effectiveFillOpacity) * alpha
-            context.fill(Path(rect), with: .color(tint.opacity(effOpacity)))
+            context.fill(Path(rect),
+                         with: .color(tint.opacity(CGFloat(state.effectiveFillOpacity) * alpha)))
         }
 
-        // バイナリコードオーバーレイ（ボックス内に常時表示）
-        drawBinaryOverlay(rect: rect, id: box.id, alpha: alpha, context: context)
+        // バイナリコードオーバーレイ（設定でON/OFF）
+        if state.showBinaryOverlay {
+            drawBinaryOverlay(rect: rect, id: box.id, alpha: alpha, context: context)
+        }
 
         switch state.frameStyle {
         case .corners:      drawCornerFrame(rect: rect, alpha: alpha, isLocked: box.isLocked, context: context)
@@ -173,15 +175,14 @@ struct TrackingOverlay: View {
 
         if state.mode == .normal {
             drawCoordinateLabel(rect: rect, context: context, alpha: alpha)
-            if box.isLocked {
-                drawLockLabel(rect: rect, context: context, alpha: alpha)
-            }
+            if box.isLocked { drawLockLabel(rect: rect, context: context, alpha: alpha) }
         }
     }
 
     // MARK: - Binary overlay
 
-    private func drawBinaryOverlay(rect: CGRect, id: UUID, alpha: CGFloat, context: GraphicsContext) {
+    private func drawBinaryOverlay(rect: CGRect, id: UUID, alpha: CGFloat,
+                                   context: GraphicsContext) {
         guard rect.width > 24, rect.height > 14 else { return }
         let bytes: [UInt8] = withUnsafeBytes(of: id.uuid) { Array($0) }
         let line = bytes.map { String($0, radix: 2).zeroPadded(to: 8) }.joined(separator: " ")
@@ -215,7 +216,8 @@ struct TrackingOverlay: View {
         p.move(to: CGPoint(x: rect.minX + corner, y: rect.maxY))
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - corner))
-        context.stroke(p, with: .color(tint.opacity(alpha)), lineWidth: isLocked ? 1.2 : 0.9)
+        context.stroke(p, with: .color(tint.opacity(alpha)),
+                       lineWidth: isLocked ? 1.2 : 0.9)
     }
 
     private func drawPlainFrame(rect: CGRect, alpha: CGFloat, isLocked: Bool,
@@ -228,7 +230,6 @@ struct TrackingOverlay: View {
                                       context: GraphicsContext) {
         context.stroke(Path(rect), with: .color(tint.opacity(alpha * 0.9)),
                        lineWidth: isLocked ? 0.7 : 0.5)
-
         let handlePoints: [CGPoint] = [
             CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.midX, y: rect.minY),
             CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.midY),
@@ -263,23 +264,20 @@ struct TrackingOverlay: View {
                   let dst = state.tracked.first(where: { $0.id == dstID }),
                   src.isDisplayable, dst.isDisplayable else { continue }
 
-            let srcCenter = CGPoint(
-                x: viewRect(from: state.currentNormalizedRect(src, now: now), in: size).midX,
-                y: viewRect(from: state.currentNormalizedRect(src, now: now), in: size).midY)
-            let dstCenter = CGPoint(
-                x: viewRect(from: state.currentNormalizedRect(dst, now: now), in: size).midX,
-                y: viewRect(from: state.currentNormalizedRect(dst, now: now), in: size).midY)
+            let srcR = viewRect(from: state.currentNormalizedRect(src, now: now), in: size)
+            let dstR = viewRect(from: state.currentNormalizedRect(dst, now: now), in: size)
+            let sc = CGPoint(x: srcR.midX, y: srcR.midY)
+            let dc = CGPoint(x: dstR.midX, y: dstR.midY)
 
             var line = Path()
-            line.move(to: srcCenter)
-            line.addLine(to: dstCenter)
+            line.move(to: sc); line.addLine(to: dc)
             context.stroke(line, with: .color(tint.opacity(0.9)), lineWidth: 0.8)
 
             let r: CGFloat = 2.5
-            for c in [srcCenter, dstCenter] {
-                context.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r,
-                                                    width: r * 2, height: r * 2)),
-                             with: .color(tint))
+            for c in [sc, dc] {
+                context.fill(
+                    Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
+                    with: .color(tint))
             }
         }
     }

@@ -3,7 +3,8 @@
 //  test02
 //
 //  H+V スキャンラインを 2 秒間隔でペア生成。
-//  ランダムな方向・速度で移動し、TrackedBox を横断したら pip 音をトリガー。
+//  ランダムな方向で移動し、TrackedBox を横断したら pip 音をトリガー。
+//  速度は TrackingState.scanLineSpeed 倍率で調整。
 //
 
 import Combine
@@ -92,18 +93,15 @@ final class ScanEngine: ObservableObject {
             for box in boxes {
                 let key = box.id.uuidString
                 guard !lines[i].crossedKeys.contains(key) else { continue }
-
                 let (lo, hi): (Double, Double)
                 switch lines[i].direction {
                 case .horizontal:
-                    // Vision Y: 0=底 → スクリーン Y: 0=上 に変換
                     lo = Double(1.0 - box.targetRect.maxY)
                     hi = Double(1.0 - box.targetRect.minY)
                 case .vertical:
                     lo = Double(box.targetRect.minX)
                     hi = Double(box.targetRect.maxX)
                 }
-
                 if sweptLo <= hi && sweptHi >= lo {
                     lines[i].crossedKeys.insert(key)
                     didPip = true
@@ -117,13 +115,14 @@ final class ScanEngine: ObservableObject {
 
     @MainActor
     private func spawnLines() {
-        let speedH = Double.random(in: 0.10...0.28)
-        let speedV = Double.random(in: 0.10...0.28)
+        let speedMult = trackingState?.scanLineSpeed ?? 1.0
+        let baseH = Double.random(in: 0.10...0.28) * speedMult
+        let baseV = Double.random(in: 0.10...0.28) * speedMult
 
         let fromTop = Bool.random()
         lines.append(ScanLine(
             position: fromTop ? -0.02 : 1.02,
-            velocity: fromTop ? speedH : -speedH,
+            velocity: fromTop ? baseH : -baseH,
             thickness: Double.random(in: 0.8...1.8),
             direction: .horizontal
         ))
@@ -131,7 +130,7 @@ final class ScanEngine: ObservableObject {
         let fromLeft = Bool.random()
         lines.append(ScanLine(
             position: fromLeft ? -0.02 : 1.02,
-            velocity: fromLeft ? speedV : -speedV,
+            velocity: fromLeft ? baseV : -baseV,
             thickness: Double.random(in: 0.8...1.8),
             direction: .vertical
         ))

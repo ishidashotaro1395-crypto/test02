@@ -15,8 +15,7 @@ struct SettingsView: View {
             Form {
                 Section("MODE") {
                     ForEach(TrackingMode.allCases, id: \.self) { m in
-                        selectionRow(label: m.label,
-                                     isSelected: state.mode == m) {
+                        selectionRow(label: m.label, isSelected: state.mode == m) {
                             state.setMode(m)
                         }
                     }
@@ -24,8 +23,7 @@ struct SettingsView: View {
 
                 Section("FRAME") {
                     ForEach(FrameStyle.allCases, id: \.self) { s in
-                        selectionRow(label: s.label,
-                                     isSelected: state.frameStyle == s) {
+                        selectionRow(label: s.label, isSelected: state.frameStyle == s) {
                             state.setFrameStyle(s)
                         }
                     }
@@ -56,6 +54,29 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    Toggle(isOn: binaryBinding) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("BINARY OVERLAY")
+                                .font(.system(size: 14, weight: .heavy, design: .monospaced))
+                            Text("ボックス内にバイナリコードを表示")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("SCAN") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("LINE SPEED")
+                                .font(.system(size: 13, design: .monospaced))
+                            Spacer()
+                            Text(String(format: "%.2f×", state.scanLineSpeed))
+                                .font(.system(size: 14, weight: .heavy, design: .monospaced))
+                        }
+                        Slider(value: scanSpeedBinding, in: 0.25...4.0)
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 Section("CAMERA") {
@@ -78,9 +99,8 @@ struct SettingsView: View {
         }
     }
 
-    private func selectionRow(label: String,
-                              isSelected: Bool,
-                              action: @escaping () -> Void) -> some View {
+    private func selectionRow(label: String, isSelected: Bool,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
                 Text(label)
@@ -88,8 +108,7 @@ struct SettingsView: View {
                     .foregroundStyle(Color.primary)
                 Spacer()
                 if isSelected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
+                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                 }
             }
             .contentShape(Rectangle())
@@ -98,16 +117,18 @@ struct SettingsView: View {
     }
 
     private var opacityBinding: Binding<Double> {
-        Binding(
-            get: { state.fillOpacity },
-            set: { state.setFillOpacity($0) }
-        )
+        Binding(get: { state.fillOpacity }, set: { state.setFillOpacity($0) })
     }
 
     private var coverBinding: Binding<Bool> {
-        Binding(
-            get: { state.coverCompletely },
-            set: { state.setCoverCompletely($0) }
-        )
+        Binding(get: { state.coverCompletely }, set: { state.setCoverCompletely($0) })
+    }
+
+    private var binaryBinding: Binding<Bool> {
+        Binding(get: { state.showBinaryOverlay }, set: { state.setShowBinaryOverlay($0) })
+    }
+
+    private var scanSpeedBinding: Binding<Double> {
+        Binding(get: { state.scanLineSpeed }, set: { state.setScanLineSpeed($0) })
     }
 }
